@@ -1,0 +1,49 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  schemas  = ["player_core", "financial_ledger"]
+}
+
+enum PlayerStatus {
+  ACTIVE
+  SUSPENDED
+  CLOSED
+
+  @@schema("player_core")
+}
+
+model Player {
+  id             String        @id @default(uuid()) @db.Uuid
+  supabaseUserId String        @unique @db.Uuid
+  agentId        String        @db.Uuid
+  status         PlayerStatus  @default(ACTIVE)
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+  wallet         PlayerWallet?
+
+  @@schema("player_core")
+}
+
+model Wallet {
+  id        String        @id @default(uuid()) @db.Uuid
+  currency  String
+  balance   Decimal       @default(0) @db.Decimal(20, 8)
+  createdAt DateTime      @default(now())
+  player    PlayerWallet?
+
+  @@schema("financial_ledger")
+}
+
+// player_core → financial_ledger bridge (no raw cross-schema FK columns)
+model PlayerWallet {
+  id       String @id @default(uuid()) @db.Uuid
+  playerId String @unique @db.Uuid
+  player   Player @relation(fields: [playerId], references: [id])
+  walletId String @unique @db.Uuid
+  wallet   Wallet @relation(fields: [walletId], references: [id])
+
+  @@schema("player_core")
+}
