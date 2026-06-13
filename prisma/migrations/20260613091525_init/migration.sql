@@ -5,6 +5,9 @@ CREATE SCHEMA IF NOT EXISTS "agent_network";
 CREATE SCHEMA IF NOT EXISTS "betting_core";
 
 -- CreateSchema
+CREATE SCHEMA IF NOT EXISTS "financial_ledger";
+
+-- CreateSchema
 CREATE SCHEMA IF NOT EXISTS "game_integration";
 
 -- CreateSchema
@@ -14,6 +17,9 @@ CREATE SCHEMA IF NOT EXISTS "messaging";
 CREATE SCHEMA IF NOT EXISTS "operator_domain";
 
 -- CreateSchema
+CREATE SCHEMA IF NOT EXISTS "player_core";
+
+-- CreateSchema
 CREATE SCHEMA IF NOT EXISTS "promotions";
 
 -- CreateEnum
@@ -21,6 +27,9 @@ CREATE TYPE "operator_domain"."OperatorStatus" AS ENUM ('ACTIVE', 'SUSPENDED');
 
 -- CreateEnum
 CREATE TYPE "agent_network"."AgentStatus" AS ENUM ('ACTIVE', 'SUSPENDED');
+
+-- CreateEnum
+CREATE TYPE "player_core"."PlayerStatus" AS ENUM ('ACTIVE', 'SUSPENDED', 'CLOSED');
 
 -- CreateEnum
 CREATE TYPE "player_core"."ActorType" AS ENUM ('PLAYER', 'AGENT', 'OPERATOR');
@@ -78,16 +87,6 @@ CREATE TYPE "promotions"."TournamentStatus" AS ENUM ('SCHEDULED', 'ACTIVE', 'END
 
 -- CreateEnum
 CREATE TYPE "messaging"."ChatSubjectType" AS ENUM ('TRANSACTION', 'CREDIT_REQUEST');
-
--- AlterTable
-ALTER TABLE "player_core"."Player" ADD COLUMN     "lastLoginAt" TIMESTAMP(3),
-ADD COLUMN     "phone" TEXT;
-
--- AlterTable
-ALTER TABLE "financial_ledger"."Wallet" ADD COLUMN     "bonusBalance" DECIMAL(20,8) NOT NULL DEFAULT 0,
-ADD COLUMN     "lockedBalance" DECIMAL(20,8) NOT NULL DEFAULT 0,
-ADD COLUMN     "updatedAt" TIMESTAMP(3) NOT NULL,
-ADD COLUMN     "withdrawableBalance" DECIMAL(20,8) NOT NULL DEFAULT 0;
 
 -- CreateTable
 CREATE TABLE "operator_domain"."Operator" (
@@ -155,6 +154,29 @@ CREATE TABLE "agent_network"."CommissionConfig" (
 );
 
 -- CreateTable
+CREATE TABLE "player_core"."Player" (
+    "id" UUID NOT NULL,
+    "supabaseUserId" UUID NOT NULL,
+    "agentId" UUID NOT NULL,
+    "phone" TEXT,
+    "status" "player_core"."PlayerStatus" NOT NULL DEFAULT 'ACTIVE',
+    "lastLoginAt" TIMESTAMP(3),
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMP(3) NOT NULL,
+
+    CONSTRAINT "Player_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
+CREATE TABLE "player_core"."PlayerWallet" (
+    "id" UUID NOT NULL,
+    "playerId" UUID NOT NULL,
+    "walletId" UUID NOT NULL,
+
+    CONSTRAINT "PlayerWallet_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
 CREATE TABLE "player_core"."Notification" (
     "id" UUID NOT NULL,
     "recipientType" "player_core"."ActorType" NOT NULL,
@@ -165,6 +187,20 @@ CREATE TABLE "player_core"."Notification" (
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     CONSTRAINT "Notification_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
+CREATE TABLE "financial_ledger"."Wallet" (
+    "id" UUID NOT NULL,
+    "currency" TEXT NOT NULL,
+    "balance" DECIMAL(20,8) NOT NULL DEFAULT 0,
+    "withdrawableBalance" DECIMAL(20,8) NOT NULL DEFAULT 0,
+    "lockedBalance" DECIMAL(20,8) NOT NULL DEFAULT 0,
+    "bonusBalance" DECIMAL(20,8) NOT NULL DEFAULT 0,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMP(3) NOT NULL,
+
+    CONSTRAINT "Wallet_pkey" PRIMARY KEY ("id")
 );
 
 -- CreateTable
@@ -492,6 +528,18 @@ CREATE UNIQUE INDEX "AgentWallet_accountId_key" ON "agent_network"."AgentWallet"
 CREATE UNIQUE INDEX "CommissionConfig_agentId_key" ON "agent_network"."CommissionConfig"("agentId");
 
 -- CreateIndex
+CREATE UNIQUE INDEX "Player_supabaseUserId_key" ON "player_core"."Player"("supabaseUserId");
+
+-- CreateIndex
+CREATE INDEX "Player_agentId_status_idx" ON "player_core"."Player"("agentId", "status");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "PlayerWallet_playerId_key" ON "player_core"."PlayerWallet"("playerId");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "PlayerWallet_walletId_key" ON "player_core"."PlayerWallet"("walletId");
+
+-- CreateIndex
 CREATE INDEX "Notification_recipientType_recipientId_readAt_idx" ON "player_core"."Notification"("recipientType", "recipientId", "readAt");
 
 -- CreateIndex
@@ -566,9 +614,6 @@ CREATE UNIQUE INDEX "ChatThread_subjectType_subjectId_key" ON "messaging"."ChatT
 -- CreateIndex
 CREATE INDEX "ChatMessage_threadId_createdAt_idx" ON "messaging"."ChatMessage"("threadId", "createdAt");
 
--- CreateIndex
-CREATE INDEX "Player_agentId_status_idx" ON "player_core"."Player"("agentId", "status");
-
 -- AddForeignKey
 ALTER TABLE "operator_domain"."OperatorWallet" ADD CONSTRAINT "OperatorWallet_operatorId_fkey" FOREIGN KEY ("operatorId") REFERENCES "operator_domain"."Operator"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
 
@@ -589,6 +634,12 @@ ALTER TABLE "agent_network"."CommissionConfig" ADD CONSTRAINT "CommissionConfig_
 
 -- AddForeignKey
 ALTER TABLE "player_core"."Player" ADD CONSTRAINT "Player_agentId_fkey" FOREIGN KEY ("agentId") REFERENCES "agent_network"."Agent"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "player_core"."PlayerWallet" ADD CONSTRAINT "PlayerWallet_playerId_fkey" FOREIGN KEY ("playerId") REFERENCES "player_core"."Player"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "player_core"."PlayerWallet" ADD CONSTRAINT "PlayerWallet_walletId_fkey" FOREIGN KEY ("walletId") REFERENCES "financial_ledger"."Wallet"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
 
 -- AddForeignKey
 ALTER TABLE "financial_ledger"."Transaction" ADD CONSTRAINT "Transaction_playerId_fkey" FOREIGN KEY ("playerId") REFERENCES "player_core"."Player"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
@@ -664,4 +715,3 @@ ALTER TABLE "promotions"."TournamentEntry" ADD CONSTRAINT "TournamentEntry_playe
 
 -- AddForeignKey
 ALTER TABLE "messaging"."ChatMessage" ADD CONSTRAINT "ChatMessage_threadId_fkey" FOREIGN KEY ("threadId") REFERENCES "messaging"."ChatThread"("id") ON DELETE CASCADE ON UPDATE CASCADE;
-
