@@ -1,0 +1,733 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  schemas  = ["operator_domain", "agent_network", "player_core", "financial_ledger", "game_integration", "betting_core", "promotions", "messaging"]
+}
+
+// ============================================================================
+// operator_domain — top-level admin identity
+// ============================================================================
+
+enum OperatorStatus {
+  ACTIVE
+  SUSPENDED
+
+  @@schema("operator_domain")
+}
+
+model Operator {
+  id             String         @id @default(uuid()) @db.Uuid
+  supabaseUserId String         @unique @db.Uuid
+  name           String
+  status         OperatorStatus @default(ACTIVE)
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+
+  agents             Agent[]
+  wallet             OperatorWallet?
+  creditRequests     AgentCreditRequest[]
+  balanceAdjustments AdminBalanceAdjustment[]
+
+  @@schema("operator_domain")
+}
+
+// operator_domain → financial_ledger bridge (no raw cross-schema FK columns)
+model OperatorWallet {
+  id         String          @id @default(uuid()) @db.Uuid
+  operatorId String          @unique @db.Uuid
+  operator   Operator        @relation(fields: [operatorId], references: [id])
+  accountId  String          @unique @db.Uuid
+  account    OperatorAccount @relation(fields: [accountId], references: [id])
+
+  @@schema("operator_domain")
+}
+
+// ============================================================================
+// agent_network — middle-tier identity + commission config
+// ============================================================================
+
+enum AgentStatus {
+  ACTIVE
+  SUSPENDED
+
+  @@schema("agent_network")
+}
+
+model Agent {
+  id             String      @id @default(uuid()) @db.Uuid
+  supabaseUserId String      @unique @db.Uuid
+  operatorId     String      @db.Uuid
+  operator       Operator    @relation(fields: [operatorId], references: [id])
+  name           String
+  phone          String?
+  status         AgentStatus @default(ACTIVE)
+  createdAt      DateTime    @default(now())
+  updatedAt      DateTime    @updatedAt
+
+  players          Player[]
+  wallet           AgentWallet?
+  commissionConfig CommissionConfig?
+  transactions     Transaction[]
+  creditRequests   AgentCreditRequest[]
+  commissionLogs   CommissionLog[]
+
+  @@index([operatorId, status])
+  @@schema("agent_network")
+}
+
+// agent_network → financial_ledger bridge
+model AgentWallet {
+  id        String       @id @default(uuid()) @db.Uuid
+  agentId   String       @unique @db.Uuid
+  agent     Agent        @relation(fields: [agentId], references: [id])
+  accountId String       @unique @db.Uuid
+  account   AgentAccount @relation(fields: [accountId], references: [id])
+
+  @@schema("agent_network")
+}
+
+model CommissionConfig {
+  id                       String   @id @default(uuid()) @db.Uuid
+  agentId                  String   @unique @db.Uuid
+  agent                    Agent    @relation(fields: [agentId], references: [id])
+  claimCommissionRate      Decimal  @default(0) @db.Decimal(20, 8)
+  depositCommissionRate    Decimal  @default(0) @db.Decimal(20, 8)
+  withdrawalCommissionRate Decimal  @default(0) @db.Decimal(20, 8)
+  playerLossBonusRate      Decimal  @default(0) @db.Decimal(20, 8)
+  minOdds                  Decimal? @db.Decimal(20, 8)
+  dailyCapAmount           Decimal? @db.Decimal(20, 8)
+  weeklyCapAmount          Decimal? @db.Decimal(20, 8)
+  claimEnabled             Boolean  @default(true)
+  depositEnabled           Boolean  @default(true)
+  withdrawalEnabled        Boolean  @default(true)
+  playerLossEnabled        Boolean  @default(true)
+  createdAt                DateTime @default(now())
+  updatedAt                DateTime @updatedAt
+
+  @@schema("agent_network")
+}
+
+// ============================================================================
+// player_core — player identity, wallet bridge, notifications
+// ============================================================================
+
+enum PlayerStatus {
+  ACTIVE
+  SUSPENDED
+  CLOSED
+
+  @@schema("player_core")
+}
+
+enum ActorType {
+  PLAYER
+  AGENT
+  OPERATOR
+
+  @@schema("player_core")
+}
+
+enum NotificationType {
+  BALANCE_UPDATE
+  TRANSACTION_CLAIMED
+  TRANSACTION_COMPLETED
+  BET_RESULT
+  BONUS_GRANTED
+  SYSTEM
+
+  @@schema("player_core")
+}
+
+model Player {
+  id             String       @id @default(uuid()) @db.Uuid
+  supabaseUserId String       @unique @db.Uuid
+  agentId        String       @db.Uuid
+  agent          Agent        @relation(fields: [agentId], references: [id])
+  phone          String?
+  status         PlayerStatus @default(ACTIVE)
+  lastLoginAt    DateTime?
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  wallet             PlayerWallet?
+  transactions       Transaction[]
+  commissionLogs     CommissionLog[]
+  bets               Bet[]
+  favourites         PlayerGameFavourite[]
+  likes              PlayerGameLike[]
+  bonuses            PlayerBonus[]
+  promoRedemptions   PromoCodeRedemption[]
+  tournamentEntries  TournamentEntry[]
+  balanceAdjustments AdminBalanceAdjustment[]
+
+  @@index([agentId, status])
+  @@schema("player_core")
+}
+
+// player_core → financial_ledger bridge (no raw cross-schema FK columns)
+model PlayerWallet {
+  id       String @id @default(uuid()) @db.Uuid
+  playerId String @unique @db.Uuid
+  player   Player @relation(fields: [playerId], references: [id])
+  walletId String @unique @db.Uuid
+  wallet   Wallet @relation(fields: [walletId], references: [id])
+
+  @@schema("player_core")
+}
+
+model Notification {
+  id            String           @id @default(uuid()) @db.Uuid
+  recipientType ActorType
+  recipientId   String           @db.Uuid
+  type          NotificationType
+  payload       Json
+  readAt        DateTime?
+  createdAt     DateTime         @default(now())
+
+  @@index([recipientType, recipientId, readAt])
+  @@schema("player_core")
+}
+
+// ============================================================================
+// financial_ledger — wallets, accounts, transactions, commission, audit
+// ============================================================================
+
+enum TransactionType {
+  DEPOSIT
+  WITHDRAWAL
+
+  @@schema("financial_ledger")
+}
+
+enum TransactionStatus {
+  PENDING
+  CLAIMED
+  COMPLETED
+  FAILED
+  CANCELLED
+
+  @@schema("financial_ledger")
+}
+
+enum PaymentMethod {
+  CBE_BIRR
+  TELEBIRR
+  EBIRR
+  BANK_TRANSFER
+
+  @@schema("financial_ledger")
+}
+
+enum CreditRequestStatus {
+  PENDING
+  CLAIMED
+  COMPLETED
+  FAILED
+  CANCELLED
+
+  @@schema("financial_ledger")
+}
+
+enum CommissionType {
+  CLAIM
+  DEPOSIT
+  WITHDRAWAL
+  PLAYER_LOSS
+
+  @@schema("financial_ledger")
+}
+
+enum LedgerDirection {
+  DEBIT
+  CREDIT
+
+  @@schema("financial_ledger")
+}
+
+enum LedgerAccountKind {
+  PLAYER_REAL
+  PLAYER_BONUS
+  AGENT_CREDIT
+  AGENT_COMMISSION
+  OPERATOR
+
+  @@schema("financial_ledger")
+}
+
+enum LedgerRefType {
+  TRANSACTION
+  BET
+  COMMISSION
+  CREDIT_REQUEST
+  ADMIN_ADJUSTMENT
+
+  @@schema("financial_ledger")
+}
+
+model Wallet {
+  id                  String        @id @default(uuid()) @db.Uuid
+  currency            String
+  balance             Decimal       @default(0) @db.Decimal(20, 8)
+  withdrawableBalance Decimal       @default(0) @db.Decimal(20, 8)
+  lockedBalance       Decimal       @default(0) @db.Decimal(20, 8)
+  bonusBalance        Decimal       @default(0) @db.Decimal(20, 8)
+  createdAt           DateTime      @default(now())
+  updatedAt           DateTime      @updatedAt
+  player              PlayerWallet?
+
+  @@schema("financial_ledger")
+}
+
+model AgentAccount {
+  id                String       @id @default(uuid()) @db.Uuid
+  creditBalance     Decimal      @default(0) @db.Decimal(20, 8)
+  commissionBalance Decimal      @default(0) @db.Decimal(20, 8)
+  currency          String
+  createdAt         DateTime     @default(now())
+  updatedAt         DateTime     @updatedAt
+  agent             AgentWallet?
+
+  @@schema("financial_ledger")
+}
+
+model OperatorAccount {
+  id            String          @id @default(uuid()) @db.Uuid
+  creditBalance Decimal         @default(0) @db.Decimal(20, 8)
+  currency      String
+  createdAt     DateTime        @default(now())
+  updatedAt     DateTime        @updatedAt
+  operator      OperatorWallet?
+
+  @@schema("financial_ledger")
+}
+
+model Transaction {
+  id            String            @id @default(uuid()) @db.Uuid
+  type          TransactionType
+  playerId      String            @db.Uuid
+  player        Player            @relation(fields: [playerId], references: [id])
+  agentId       String?           @db.Uuid
+  agent         Agent?            @relation(fields: [agentId], references: [id])
+  amount        Decimal           @db.Decimal(20, 8)
+  paymentMethod PaymentMethod
+  status        TransactionStatus @default(PENDING)
+  playerPhone   String
+  zplayPhone    String
+  claimVersion  Int               @default(0)
+  createdAt     DateTime          @default(now())
+  claimedAt     DateTime?
+  completedAt   DateTime?
+
+  commissionLogs CommissionLog[]
+
+  @@index([status, type])
+  @@index([agentId, status])
+  @@index([playerId])
+  @@schema("financial_ledger")
+}
+
+model AgentCreditRequest {
+  id            String              @id @default(uuid()) @db.Uuid
+  agentId       String              @db.Uuid
+  agent         Agent               @relation(fields: [agentId], references: [id])
+  operatorId    String?             @db.Uuid
+  operator      Operator?           @relation(fields: [operatorId], references: [id])
+  amount        Decimal             @db.Decimal(20, 8)
+  paymentMethod PaymentMethod
+  status        CreditRequestStatus @default(PENDING)
+  claimVersion  Int                 @default(0)
+  createdAt     DateTime            @default(now())
+  claimedAt     DateTime?
+  completedAt   DateTime?
+
+  @@index([status])
+  @@index([agentId, status])
+  @@schema("financial_ledger")
+}
+
+model CommissionLog {
+  id            String         @id @default(uuid()) @db.Uuid
+  agentId       String         @db.Uuid
+  agent         Agent          @relation(fields: [agentId], references: [id])
+  playerId      String?        @db.Uuid
+  player        Player?        @relation(fields: [playerId], references: [id])
+  transactionId String?        @db.Uuid
+  transaction   Transaction?   @relation(fields: [transactionId], references: [id])
+  betId         String?        @db.Uuid
+  bet           Bet?           @relation(fields: [betId], references: [id])
+  type          CommissionType
+  amount        Decimal        @db.Decimal(20, 8)
+  rateApplied   Decimal        @db.Decimal(20, 8)
+  createdAt     DateTime       @default(now())
+
+  @@index([agentId, createdAt])
+  @@index([type])
+  @@schema("financial_ledger")
+}
+
+// Append-only audit log of every credit movement. Never updated or deleted.
+// Owner/ref/actor columns are polymorphic, so they carry no FK constraints.
+model LedgerEntry {
+  id           String            @id @default(uuid()) @db.Uuid
+  accountKind  LedgerAccountKind
+  ownerId      String            @db.Uuid
+  direction    LedgerDirection
+  amount       Decimal           @db.Decimal(20, 8)
+  balanceAfter Decimal           @db.Decimal(20, 8)
+  currency     String
+  refType      LedgerRefType
+  refId        String            @db.Uuid
+  reason       String?
+  actorType    ActorType
+  actorId      String?           @db.Uuid
+  createdAt    DateTime          @default(now())
+
+  @@index([accountKind, ownerId, createdAt])
+  @@index([refType, refId])
+  @@schema("financial_ledger")
+}
+
+model AdminBalanceAdjustment {
+  id         String   @id @default(uuid()) @db.Uuid
+  operatorId String   @db.Uuid
+  operator   Operator @relation(fields: [operatorId], references: [id])
+  playerId   String   @db.Uuid
+  player     Player   @relation(fields: [playerId], references: [id])
+  amount     Decimal  @db.Decimal(20, 8)
+  reason     String
+  createdAt  DateTime @default(now())
+
+  @@index([playerId, createdAt])
+  @@schema("financial_ledger")
+}
+
+// ============================================================================
+// game_integration — provider catalog + lobby associations
+// ============================================================================
+
+enum GameCategory {
+  KENO
+  FOOTBALL_CUP
+  WORLD_CUP
+  HORSE_RACING
+  GREYHOUND_RACING
+  STEEPLECHASE
+  LUCKY_SIX
+  PENALTY_SHOOTOUT
+  FORCE_1_RACING
+  VIRTUAL_RACES
+  FOOTBALL
+
+  @@schema("game_integration")
+}
+
+enum GameBadge {
+  HOT
+  TOP
+  NEW
+
+  @@schema("game_integration")
+}
+
+model GameProvider {
+  id      String  @id @default(uuid()) @db.Uuid
+  code    String  @unique
+  name    String
+  enabled Boolean @default(true)
+
+  games Game[]
+
+  @@schema("game_integration")
+}
+
+model Game {
+  id           String       @id @default(uuid()) @db.Uuid
+  providerId   String       @db.Uuid
+  provider     GameProvider @relation(fields: [providerId], references: [id])
+  code         String
+  name         String
+  category     GameCategory
+  thumbnailUrl String?
+  minBet       Decimal      @db.Decimal(20, 8)
+  maxBet       Decimal      @db.Decimal(20, 8)
+  badge        GameBadge?
+  enabled      Boolean      @default(true)
+  sortOrder    Int          @default(0)
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+
+  bets       Bet[]
+  favourites PlayerGameFavourite[]
+  likes      PlayerGameLike[]
+
+  @@unique([providerId, code])
+  @@schema("game_integration")
+}
+
+model PlayerGameFavourite {
+  id        String   @id @default(uuid()) @db.Uuid
+  playerId  String   @db.Uuid
+  player    Player   @relation(fields: [playerId], references: [id])
+  gameId    String   @db.Uuid
+  game      Game     @relation(fields: [gameId], references: [id])
+  createdAt DateTime @default(now())
+
+  @@unique([playerId, gameId])
+  @@schema("game_integration")
+}
+
+model PlayerGameLike {
+  id        String   @id @default(uuid()) @db.Uuid
+  playerId  String   @db.Uuid
+  player    Player   @relation(fields: [playerId], references: [id])
+  gameId    String   @db.Uuid
+  game      Game     @relation(fields: [gameId], references: [id])
+  createdAt DateTime @default(now())
+
+  @@unique([playerId, gameId])
+  @@schema("game_integration")
+}
+
+// ============================================================================
+// betting_core — bet records + settlement line items
+// ============================================================================
+
+enum BetType {
+  SINGLE
+  MULTI
+  COMBO
+  SYSTEM
+
+  @@schema("betting_core")
+}
+
+enum BetStatus {
+  OPEN
+  WON
+  LOST
+  VOID
+  CASHED_OUT
+
+  @@schema("betting_core")
+}
+
+enum SelectionResult {
+  PENDING
+  WON
+  LOST
+  VOID
+
+  @@schema("betting_core")
+}
+
+model Bet {
+  id               String    @id @default(uuid()) @db.Uuid
+  playerId         String    @db.Uuid
+  player           Player    @relation(fields: [playerId], references: [id])
+  gameId           String    @db.Uuid
+  game             Game      @relation(fields: [gameId], references: [id])
+  type             BetType
+  stake            Decimal   @db.Decimal(20, 8)
+  totalOdds        Decimal   @db.Decimal(20, 8)
+  potentialReturn  Decimal   @db.Decimal(20, 8)
+  payout           Decimal   @default(0) @db.Decimal(20, 8)
+  status           BetStatus @default(OPEN)
+  acceptBetterOdds Boolean   @default(false)
+  usedBonus        Boolean   @default(false)
+  placedAt         DateTime  @default(now())
+  settledAt        DateTime?
+
+  selections     BetSelection[]
+  commissionLogs CommissionLog[]
+
+  @@index([playerId, status])
+  @@index([gameId])
+  @@index([status])
+  @@schema("betting_core")
+}
+
+model BetSelection {
+  id              String          @id @default(uuid()) @db.Uuid
+  betId           String          @db.Uuid
+  bet             Bet             @relation(fields: [betId], references: [id], onDelete: Cascade)
+  marketName      String
+  selectionName   String
+  oddsAtPlacement Decimal         @db.Decimal(20, 8)
+  result          SelectionResult @default(PENDING)
+  externalRef     String?
+
+  @@index([betId])
+  @@schema("betting_core")
+}
+
+// ============================================================================
+// promotions — bonuses, promo codes, tournaments
+// ============================================================================
+
+enum PromotionType {
+  DAILY_CASHBACK
+  ULTRA_CASHBACK
+  SPORT_ACCUMULATOR
+  SINGLE_BOOST
+  AUTO_CASHOUT
+  COMBIBOOST
+
+  @@schema("promotions")
+}
+
+enum PlayerBonusStatus {
+  ACTIVE
+  COMPLETED
+  EXPIRED
+  CANCELLED
+
+  @@schema("promotions")
+}
+
+enum TournamentStatus {
+  SCHEDULED
+  ACTIVE
+  ENDED
+
+  @@schema("promotions")
+}
+
+model Promotion {
+  id          String        @id @default(uuid()) @db.Uuid
+  type        PromotionType
+  name        String
+  description String?
+  config      Json
+  active      Boolean       @default(true)
+  startsAt    DateTime?
+  endsAt      DateTime?
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  bonuses PlayerBonus[]
+
+  @@schema("promotions")
+}
+
+model PlayerBonus {
+  id                  String            @id @default(uuid()) @db.Uuid
+  playerId            String            @db.Uuid
+  player              Player            @relation(fields: [playerId], references: [id])
+  promotionId         String?           @db.Uuid
+  promotion           Promotion?        @relation(fields: [promotionId], references: [id])
+  amount              Decimal           @db.Decimal(20, 8)
+  wageringRequirement Decimal           @db.Decimal(20, 8)
+  wageredAmount       Decimal           @default(0) @db.Decimal(20, 8)
+  status              PlayerBonusStatus @default(ACTIVE)
+  createdAt           DateTime          @default(now())
+  expiresAt           DateTime?
+
+  @@index([playerId, status])
+  @@schema("promotions")
+}
+
+model PromoCode {
+  id              String    @id @default(uuid()) @db.Uuid
+  code            String    @unique
+  bonusAmount     Decimal   @db.Decimal(20, 8)
+  maxRedemptions  Int?
+  redemptionCount Int       @default(0)
+  active          Boolean   @default(true)
+  expiresAt       DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  redemptions PromoCodeRedemption[]
+
+  @@schema("promotions")
+}
+
+model PromoCodeRedemption {
+  id          String    @id @default(uuid()) @db.Uuid
+  promoCodeId String    @db.Uuid
+  promoCode   PromoCode @relation(fields: [promoCodeId], references: [id])
+  playerId    String    @db.Uuid
+  player      Player    @relation(fields: [playerId], references: [id])
+  createdAt   DateTime  @default(now())
+
+  @@unique([promoCodeId, playerId])
+  @@schema("promotions")
+}
+
+model Tournament {
+  id        String           @id @default(uuid()) @db.Uuid
+  name      String
+  prizePool Decimal          @db.Decimal(20, 8)
+  status    TournamentStatus @default(SCHEDULED)
+  startsAt  DateTime
+  endsAt    DateTime
+  createdAt DateTime         @default(now())
+  updatedAt DateTime         @updatedAt
+
+  entries TournamentEntry[]
+
+  @@schema("promotions")
+}
+
+model TournamentEntry {
+  id           String     @id @default(uuid()) @db.Uuid
+  tournamentId String     @db.Uuid
+  tournament   Tournament @relation(fields: [tournamentId], references: [id])
+  playerId     String     @db.Uuid
+  player       Player     @relation(fields: [playerId], references: [id])
+  points       Int        @default(0)
+  createdAt    DateTime   @default(now())
+
+  @@unique([tournamentId, playerId])
+  @@schema("promotions")
+}
+
+model CombiBoostTier {
+  id            String  @id @default(uuid()) @db.Uuid
+  minSelections Int
+  boostPercent  Decimal @db.Decimal(20, 8)
+  minOdds       Decimal @db.Decimal(20, 8)
+
+  @@schema("promotions")
+}
+
+// ============================================================================
+// messaging — chat threads + messages
+// ============================================================================
+
+enum ChatSubjectType {
+  TRANSACTION
+  CREDIT_REQUEST
+
+  @@schema("messaging")
+}
+
+model ChatThread {
+  id          String          @id @default(uuid()) @db.Uuid
+  subjectType ChatSubjectType
+  subjectId   String          @db.Uuid
+  createdAt   DateTime        @default(now())
+  closedAt    DateTime?
+
+  messages ChatMessage[]
+
+  @@unique([subjectType, subjectId])
+  @@schema("messaging")
+}
+
+model ChatMessage {
+  id         String     @id @default(uuid()) @db.Uuid
+  threadId   String     @db.Uuid
+  thread     ChatThread @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  senderType ActorType
+  senderId   String     @db.Uuid
+  body       String
+  createdAt  DateTime   @default(now())
+  readAt     DateTime?
+
+  @@index([threadId, createdAt])
+  @@schema("messaging")
+}
