@@ -1,5 +1,5 @@
 /**
- * Scenario seed — phase 1: identities only (operator, agents, players).
+ * Scenario seed — phase 1: identities + suspension reassignment demo.
  *
  * Boots a Nest application context (like seed-operator.ts) and drives the real
  * service layer so every record is produced exactly the way the running API
@@ -7,11 +7,10 @@
  *
  * What it seeds:
  *   - 1 top-level Operator (idempotent — keyed by a stable email, reused)
- *   - Agents: funded+active, suspended, commission-disabled
- *   - Players referred by the funded agent
- *
- * (Transactions, credit requests, chat, games and bets are deferred to a later
- * phase.)
+ *   - Active agents: funded, commission-disabled
+ *   - Players under the funded agent
+ *   - A "departing" agent WITH its own players, which is then suspended to
+ *     demonstrate that its players are reassigned across the active agents.
  *
  * Each run is namespaced by a unique tag so agent/player Supabase identities
  * never collide; re-running accumulates fresh identities. The Operator is keyed
@@ -22,6 +21,7 @@
  */
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from '../src/app.module';
+import { PrismaService } from '../src/database/prisma.service';
 import { SupabaseService } from '../src/infrastructure/supabase/supabase.service';
 import { OperatorsService } from '../src/features/operators/operators.service';
 import { AgentsService } from '../src/features/agents/agents.service';
@@ -54,6 +54,7 @@ async function main(): Promise<void> {
     logger: ['error', 'warn'],
   });
 
+  const prisma = app.get(PrismaService);
   const supabase = app.get(SupabaseService);
   const operators = app.get(OperatorsService);
   const agents = app.get(AgentsService);
@@ -85,6 +86,13 @@ async function main(): Promise<void> {
     return data.user.id;
   }
 
+  async function makePlayer(label: string, agentId: string): Promise<string> {
+    const email = `player-${label}-${TAG}@seed.local`;
+    const uid = await ensureAuthUser(email, DEFAULT_PASSWORD);
+    const player = await auth.provision(uid, { agentId });
+    return player.id;
+  }
+
   try {
     log(`\n=== Seeding identities (tag=${TAG}) ===\n`);
 
@@ -96,8 +104,7 @@ async function main(): Promise<void> {
     });
     log(`Operator: ${operator.id} (${operatorEmail})`);
 
-    // ---- Agents ------------------------------------------------------------
-    // Funded + active: commissions on, generous float.
+    // ---- Active agents (the reassignment targets) -------------------------
     const fundedAgent = await agents.createAgent(operator.id, {
       name: `Funded Agent ${TAG}`,
       phone: phoneFor(0),
@@ -107,24 +114,10 @@ async function main(): Promise<void> {
       depositCommissionRate: '0.02',
       withdrawalCommissionRate: '0.015',
       playerLossBonusRate: '0.05',
-      dailyCapAmount: '5000',
-      weeklyCapAmount: '20000',
       initialCredit: '100000',
     });
     log(`Agent (funded/active): ${fundedAgent.id}`);
 
-    // Suspended agent — exercises the SUSPENDED status path.
-    const suspendedAgent = await agents.createAgent(operator.id, {
-      name: `Suspended Agent ${TAG}`,
-      phone: phoneFor(1),
-      password: DEFAULT_PASSWORD,
-      email: `agent-suspended-${TAG}@seed.local`,
-      initialCredit: '10000',
-    });
-    await agents.setStatus(operator.id, suspendedAgent.id, 'SUSPENDED');
-    log(`Agent (suspended): ${suspendedAgent.id}`);
-
-    // Commission-disabled agent.
     const noCommAgent = await agents.createAgent(operator.id, {
       name: `No-Commission Agent ${TAG}`,
       phone: phoneFor(2),
@@ -136,21 +129,48 @@ async function main(): Promise<void> {
       withdrawalEnabled: false,
       playerLossEnabled: false,
     });
-    log(`Agent (commission-disabled): ${noCommAgent.id}`);
+    log(`Agent (commission-disabled/active): ${noCommAgent.id}`);
 
-    // ---- Players (referred by the funded agent) ---------------------------
-    async function makePlayer(label: string): Promise<string> {
-      const email = `player-${label}-${TAG}@seed.local`;
-      const uid = await ensureAuthUser(email, DEFAULT_PASSWORD);
-      const player = await auth.provision(uid, { agentId: fundedAgent.id });
-      return player.id;
-    }
+    // A couple of players that already belong to the funded agent.
+    await makePlayer('alpha', fundedAgent.id);
+    await makePlayer('bravo', fundedAgent.id);
 
-    const playerIds: string[] = [];
-    for (const label of ['alpha', 'bravo', 'charlie', 'delta']) {
-      playerIds.push(await makePlayer(label));
+    // ---- Suspension reassignment demo -------------------------------------
+    // Create an agent that owns players, then suspend it and watch its players
+    // get spread across the operator's active agents (funded + no-commission).
+    const departingAgent = await agents.createAgent(operator.id, {
+      name: `Departing Agent ${TAG}`,
+      phone: phoneFor(1),
+      password: DEFAULT_PASSWORD,
+      email: `agent-departing-${TAG}@seed.local`,
+      initialCredit: '10000',
+    });
+    log(`\nAgent (to be suspended): ${departingAgent.id}`);
+
+    const departingPlayers: string[] = [];
+    for (const label of ['charlie', 'delta', 'echo', 'foxtrot']) {
+      departingPlayers.push(await makePlayer(label, departingAgent.id));
     }
-    log(`Players: ${playerIds.length} provisioned under funded agent`);
+    log(`  provisioned ${departingPlayers.length} players under it`);
+
+    log(`  suspending ${departingAgent.id} ...`);
+    await agents.setStatus(operator.id, departingAgent.id, 'SUSPENDED');
+
+    // Report where each player landed, resolving the new agent's name from the
+    // DB. Players spread across ALL the operator's active agents — including any
+    // left over from previous seed runs (the operator is reused across runs).
+    log(`  reassignment result:`);
+    for (const id of departingPlayers) {
+      const p = await prisma.player.findUnique({ where: { id } });
+      const newAgent = p
+        ? await prisma.agent.findUnique({ where: { id: p.agentId } })
+        : null;
+      const tag =
+        newAgent?.id === departingAgent.id
+          ? ' (still on suspended agent — no active target!)'
+          : '';
+      log(`    player ${id} -> ${newAgent?.name ?? p?.agentId ?? '?'}${tag}`);
+    }
 
     log(`\n=== Done. Tag: ${TAG} ===\n`);
   } finally {
