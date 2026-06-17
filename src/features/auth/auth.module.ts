@@ -4,6 +4,7 @@ import { DatabaseModule } from '../../database/database.module';
 import { SupabaseModule } from '../../infrastructure/supabase/supabase.module';
 import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
+import { SocketAuthService } from './socket-auth.service';
 import { SupabaseJwtStrategy } from './strategies/supabase-jwt.strategy';
 import { SupabaseProvisionStrategy } from './strategies/supabase-provision.strategy';
 
@@ -14,6 +15,12 @@ import { SupabaseProvisionStrategy } from './strategies/supabase-provision.strat
     DatabaseModule,
   ],
   controllers: [AuthController],
-  providers: [SupabaseJwtStrategy, SupabaseProvisionStrategy, AuthService],
+  providers: [
+    SupabaseJwtStrategy,
+    SupabaseProvisionStrategy,
+    AuthService,
+    SocketAuthService,
+  ],
+  exports: [SocketAuthService],
 })
 export class AuthModule {}

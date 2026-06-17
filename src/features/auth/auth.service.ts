@@ -1,5 +1,9 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
-import { Player } from '@prisma/client';
+import {
+  BadRequestException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
+import { AgentStatus, Player } from '@prisma/client';
 import { PrismaService } from '../../database/prisma.service';
 import { SupabaseService } from '../../infrastructure/supabase/supabase.service';
 import { ProvisionDto } from './dto/provision.dto';
@@ -23,6 +27,11 @@ export class AuthService {
       where: { id: dto.agentId },
     });
     if (!agent) throw new NotFoundException('UNKNOWN_AGENT');
+    // The referral link is permanent, so a player may only be provisioned under
+    // an active agent — a suspended agent can't take on new players.
+    if (agent.status !== AgentStatus.ACTIVE) {
+      throw new BadRequestException('AGENT_NOT_ACTIVE');
+    }
 
     const player = await this.prisma.$transaction(async (tx) => {
       const p = await tx.player.create({
